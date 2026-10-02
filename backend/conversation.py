@@ -1,4 +1,4 @@
-MAX_MESSAGES = 4
+MAX_MESSAGES = 6
 
 
 def add_message(messages, role, content):
@@ -14,17 +14,21 @@ def trim_messages(messages):
     if not messages:
         return
 
-    system_message = messages[0]
+    system_messages = [
+        message
+        for message in messages
+        if message["role"] == "system"
+    ]
 
-    if system_message.get("role") != "system":
-        return
+    conversation_messages = [
+        message
+        for message in messages
+        if message["role"] != "system"
+    ]
 
-    recent_messages = messages[1:]
+    conversation_messages = conversation_messages[-MAX_MESSAGES:]
 
-    if len(recent_messages) > MAX_MESSAGES:
-        recent_messages = recent_messages[-MAX_MESSAGES:]
-
-    messages[:] = [system_message] + recent_messages
+    messages[:] = system_messages + conversation_messages
 
 
 def get_messages(messages):
