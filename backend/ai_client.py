@@ -8,7 +8,18 @@ from groq import Groq
 from context import get_selected_context
 from conversation import add_message
 from agent import process_action
+from task_state import (
+    create_task,
+    update_task_status,
+    add_command,
+    add_result,
+    get_task_history,
+    initialize_database,
+)
 MAX_STEPS = 20
+MAX_STEPS = 20
+MAX_TASK_HISTORY = 2
+MAX_RESULT_CHARS = 4000
 
 load_dotenv()
 
@@ -25,114 +36,88 @@ if not model:
 client = Groq(api_key=api_key)
 
 
-SYSTEM_PROMPT = """You are a Linux Bash terminal AI agent.
+COMMON_PROMPT = """You are a Linux Bash terminal AI agent.
 
-You help users understand, diagnose, and manage Linux systems.
-
-You can inspect and manage the Linux system by proposing Bash commands.
-
-IMPORTANT:
-Return ONLY valid JSON.
-
-You have exactly two possible response types.
-
-For a command:
+Return ONLY valid JSON:
 {"action":"command","command":"COMMAND"}
-
-For a final answer:
+or
 {"action":"answer","content":"ANSWER"}
 
-Rules:
-- Assume Linux with Bash unless the user says otherwise.
-- Use provided system context as observed evidence.
-- Do not invent system information.
-- Do not claim a cause unless evidence supports it.
-- Work on the user's requested task until it is completed or cannot continue.
-- You may request multiple commands during a task, but only ONE command per response.
-- After a command is executed, use its actual output to decide the next step.
+Core rules:
+- Use system context and command results as evidence.
+- Never invent system information or command output.
+- Preserve exact observed values.
+- Do not present inference as fact.
+- If evidence is insufficient, request another command.
+- Return ONE command at a time.
+- The user must explicitly approve every command.
+- Never execute commands yourself.
+- Return the exact Bash command.
+- Normal Bash syntax is allowed, including pipes, redirects, &&, ||,
+  command substitution, and other shell operators.
+- After execution, use the actual result to decide the next step.
 - Never assume a command succeeded.
-- Never invent command output.
-- Do not repeat a command unless there is a reason.
-- If a command fails, analyze the actual error before deciding what to do next.
-- Prefer read-only diagnostic commands when troubleshooting.
-- You may propose commands that require elevated privileges when appropriate.
-- You may propose modifying or destructive commands when they are relevant to the user's request.
-- Never execute a command yourself.
-- The user must explicitly approve every command before execution.
-- Return the exact Bash command you want executed.
-- When a command could cause significant or destructive changes, make the command explicit so the user can review it before approval.
-- When multiple commands are required, execute them one at a time and wait for the actual result before deciding the next command.
-- When the task is complete, return an "answer" action.
-- Keep final answers concise.
+- If a command fails, analyze the actual error before continuing.
+- Complete the task until finished or unable to continue.
+- When finished, return an answer action.
+- Keep answers concise.
 """
-TROUBLESHOOTING_PROMPT = """You are troubleshooting a Linux system.
 
-Your goal is to diagnose the user's problem and, when appropriate, resolve it.
+NORMAL_PROMPT = COMMON_PROMPT + """
 
-Use the provided Linux system context and actual command results as evidence.
+Normal operation:
+- For current/live/check/verify requests, prefer a live command.
+- Use system context directly when it is sufficient.
+- Answer only what is relevant to the user's request.
+- Do not infer CPU load, health, performance, or other conditions
+  unless the relevant evidence was collected.
+- Preserve exact OS names, versions, codenames, kernel versions,
+  paths, IP addresses, and process information.
+"""
 
-IMPORTANT:
-Return ONLY valid JSON.
+TROUBLESHOOTING_PROMPT = COMMON_PROMPT + """
 
-For a command:
-{"action":"command","command":"COMMAND"}
-
-For a final answer:
-{"action":"answer","content":"ANSWER"}
-
-Troubleshooting process:
-
-1. Understand the reported problem.
-2. Examine the available system context.
-3. If more information is required, request ONE diagnostic command.
-4. Wait for the actual command result.
-5. Analyze the actual result.
-6. Decide whether another command is required.
-7. Continue until:
-   - the problem is identified,
-   - the problem is resolved,
-   - the task cannot continue without user input,
-   - or there is insufficient evidence.
-8. When finished, return an "answer" action.
-
-Rules:
-
-- Work on the troubleshooting task until it is complete or cannot continue.
-- Request only ONE command per response.
-- After every executed command, use its actual output to decide the next step.
-- Never invent command output.
-- Never assume a command succeeded.
-- Never claim a root cause without supporting evidence.
+Troubleshooting:
+- Diagnose the reported problem using available evidence.
+- Prefer read-only diagnostic commands initially.
 - Clearly distinguish observed facts from hypotheses.
-- Do not repeat a command unless there is a specific reason.
-- Prefer read-only diagnostic commands when investigating a problem.
-- If a modification is required to fix the problem, you may propose the required command.
-- Commands requiring sudo are allowed when appropriate.
-- Destructive commands are allowed when they are genuinely required for the requested task.
-- Return the exact Bash command you want executed.
-- Normal Bash syntax is allowed, including pipes, redirects, &&, ||, command substitution, and other shell operators.
-- The user must explicitly approve every command before execution.
-- Never execute a command yourself.
-- If a command fails, analyze the actual error before deciding what to do next.
-- Do not blindly continue with subsequent commands after a failure.
-- Prefer the least invasive fix that addresses the identified problem.
-- Before making a significant system change, explain the purpose through the command itself and let the user review it.
-- After making a change, verify the result with an appropriate command.
-- When the problem is resolved, stop executing commands and provide a concise summary of:
-  - what was observed,
-  - what was done,
-  - and the final result.
+- Do not claim a root cause without supporting evidence.
+- If a fix is required, propose the least invasive appropriate command.
+- After making a change, verify the result.
+- Stop when the problem is resolved or cannot be diagnosed further.
 """
 
 def ask_ai(messages):
-    response = client.chat.completions.create(
-        model=model,
-        messages=messages,
-        reasoning_effort="none"
+    input_chars = sum(
+        len(message.get("content", ""))
+        for message in messages
     )
 
-    return response.choices[0].message.content
+    estimated_input_tokens = input_chars / 4
 
+    print(
+        f"[Token estimate] "
+        f"input chars={input_chars}, "
+        f"~{estimated_input_tokens:.0f} tokens"
+    )
+
+    response = client.chat.completions.create(
+        model=model,
+        messages=messages
+    )
+
+    output = response.choices[0].message.content
+
+    output_chars = len(output)
+    estimated_output_tokens = output_chars / 4
+
+    print(
+        f"[Token estimate] "
+        f"output chars={output_chars}, "
+        f"~{estimated_output_tokens:.0f} tokens"
+    )
+
+    return output
 
 def build_request_messages(conversation, question):
     context = get_selected_context(question)
@@ -171,201 +156,230 @@ def get_ai_action(conversation, question):
             "action": "answer",
             "content": response
         }
+def compact_text(text, max_chars=MAX_RESULT_CHARS):
+    if not text:
+        return ""
 
+    if len(text) <= max_chars:
+        return text
+
+    half = max_chars // 2
+
+    return (
+        text[:half]
+        + "\n...[middle of result truncated]...\n"
+        + text[-half:]
+    )
+
+def compact_result(result):
+    text = json.dumps(result, indent=2)
+    return compact_text(text)
 
 def handle_agent_turn(conversation, question):
-    task_input = question
-
-    for step in range(MAX_STEPS):
-        action = get_ai_action(
-            conversation,
-            task_input
-        )
-
-        if action.get("action") == "answer":
-            answer = action.get(
-                "content",
-                "No answer returned."
-            )
-
-            print(f"\nAI: {answer}\n")
-
-            add_message(
-                conversation,
-                "user",
-                task_input
-            )
-
-            add_message(
-                conversation,
-                "assistant",
-                json.dumps(action)
-            )
-
-            return
-
-        if action.get("action") != "command":
-            print("AI returned an invalid action.\n")
-            return
-
-        command = action.get("command")
-
-        if not command:
-            print("AI returned an empty command.\n")
-            return
-
-        print(f"\nAI wants to run: {command}")
-
-        result = process_action(
-            json.dumps({
-                "action": "command",
-                "command": command
-            })
-        )
-
-        if result["type"] == "cancelled":
-            print("Task cancelled.\n")
-            return
-
-        if result["type"] == "rejected":
-            print(f"{result['message']}\n")
-            return
-
-        if result["type"] != "result":
-            print("Command execution failed.\n")
-            return
-
-        execution_message = (
-            "The following command was executed on the Linux system.\n\n"
-            f"Command: {result['command']}\n\n"
-            f"Execution result:\n"
-            f"{json.dumps(result['result'], indent=2)}"
-        )
-
-        add_message(
-            conversation,
-            "user",
-            task_input
-        )
-
-        add_message(
-            conversation,
-            "assistant",
-            json.dumps(action)
-        )
-
-        add_message(
-            conversation,
-            "user",
-            execution_message
-        )
-
-        task_input = execution_message
-
-    print(
-        f"\nTask stopped after {MAX_STEPS} steps "
-        "to prevent an endless execution loop.\n"
-    )
-
-    if action.get("action") == "answer":
-        answer = action.get(
-            "content",
-            "No answer returned."
-        )
-
-        print(f"AI: {answer}\n")
-
-        add_message(
-            conversation,
-            "user",
-            question
-        )
-
-        add_message(
-            conversation,
-            "assistant",
-            answer
-        )
-
-        return
-
-    if action.get("action") != "command":
-        print("AI returned an invalid action.\n")
-        return
-
-    command = action.get("command")
-
-    if not command:
-        print("AI returned an empty command.\n")
-        return
-
-    print(f"\nAI wants to run: {command}")
-
-    result = process_action(
-        json.dumps({
-            "action": "command",
-            "command": command
-        })
-    )
-
-    if result["type"] != "result":
-        print(f"{result['message']}\n")
-        return
-
-    output = result["result"]
-
-    execution_message = (
-        "The following command was executed on the Linux system.\n\n"
-        f"Command: {command}\n\n"
-        f"Result:\n{json.dumps(output, indent=2)}"
-    )
-
-    add_message(
-        conversation,
-        "user",
-        question
-    )
-
-    add_message(
-        conversation,
-        "assistant",
-        json.dumps(action)
-    )
-
-    follow_up_messages = build_request_messages(
-        conversation,
-        execution_message
-    )
-
-    follow_up = ask_ai(follow_up_messages)
+    task_id = create_task(question)
 
     try:
-        follow_up_action = json.loads(follow_up)
-    except json.JSONDecodeError:
-        follow_up_action = {
-            "action": "answer",
-            "content": follow_up
-        }
+        for step in range(MAX_STEPS):
 
-    if follow_up_action.get("action") == "command":
-        print(f"AI wants to run: {follow_up_action.get('command')}\n")
-    else:
-        print(
-            f"AI: {follow_up_action.get('content', follow_up)}\n"
+            task_history = get_task_history(
+                task_id,
+                limit=MAX_TASK_HISTORY
+            )
+
+            messages = [
+                conversation[0],
+                {
+                    "role": "system",
+                    "content": (
+                        "Current Linux system context:\n"
+                        + json.dumps(
+                            get_selected_context(question),
+                            indent=2
+                        )
+                    )
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        "Original user task:\n"
+                        + question
+                    )
+                }
+            ]
+
+            for item in task_history:
+                output = item["output"] or ""
+
+                if len(output) > MAX_RESULT_CHARS:
+                    half = MAX_RESULT_CHARS // 2
+
+                    output = (
+                        output[:half]
+                        + "\n...[middle of result truncated]...\n"
+                        + output[-half:]
+                    )
+
+                return_code = item["return_code"]
+
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "COMPLETED COMMAND\n"
+                        "The following command has already been executed. "
+                        "Do not execute it again unless the task specifically "
+                        "requires repeating it.\n\n"
+                        f"Command:\n{item['command']}\n\n"
+                        f"Return code: {return_code}\n\n"
+                        f"Actual output:\n{output}"
+                    )
+                })
+
+            if task_history:
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "The completed commands above are historical evidence "
+                        "for this task. Do not repeat a successful command "
+                        "unless its result is insufficient or the task requires "
+                        "verification. Decide whether to return the final answer "
+                        "or request one new command."
+                    )
+                })
+
+            for index, message in enumerate(messages):
+                content = message.get("content", "")
+                print(
+                    f"[Prompt part {index}] "
+                    f"role={message.get('role')} "
+                    f"chars={len(content)} "
+                    f"~tokens={len(content) / 4:.0f}"
+                )
+            response = ask_ai(messages)
+
+            try:
+                action = json.loads(response)
+            except json.JSONDecodeError:
+                start = response.find("{")
+                end = response.rfind("}")
+
+                if start != -1 and end != -1 and end > start:
+                    try:
+                        action = json.loads(response[start:end + 1])
+                    except json.JSONDecodeError:
+                        print(f"\nAI returned invalid JSON:\n{response}\n")
+                        update_task_status(task_id, "FAILED")
+                        return
+                else:
+                    print(f"\nAI returned invalid JSON:\n{response}\n")
+                    update_task_status(task_id, "FAILED")
+                    return
+                
+            if action.get("action") == "answer":
+                answer = action.get(
+                    "content",
+                    "No answer returned."
+                )
+
+                print(f"\nAI: {answer}\n")
+                update_task_status(task_id, "COMPLETED")
+                return
+
+            if action.get("action") != "command":
+                print("AI returned an invalid action.\n")
+                update_task_status(task_id, "FAILED")
+                return
+
+            command = action.get("command")
+
+            if not command:
+                print("AI returned an empty command.\n")
+                update_task_status(task_id, "FAILED")
+                return
+
+            print(f"\nAI wants to run: {command}")
+
+            result = process_action(
+                json.dumps({
+                    "action": "command",
+                    "command": command
+                })
+            )
+
+            if result["type"] == "cancelled":
+                add_command(
+                    task_id,
+                    command,
+                    False,
+                    status="CANCELLED"
+                )
+
+                update_task_status(
+                    task_id,
+                    "CANCELLED"
+                )
+
+                print("Task cancelled.\n")
+                return
+
+            if result["type"] == "rejected":
+                add_command(
+                    task_id,
+                    command,
+                    False,
+                    status="FAILED"
+                )
+
+                update_task_status(
+                    task_id,
+                    "FAILED"
+                )
+
+                print(f"{result['message']}\n")
+                return
+
+            if result["type"] != "result":
+                update_task_status(
+                    task_id,
+                    "FAILED"
+                )
+
+                print("Command execution failed.\n")
+                return
+
+            execution_result = result["result"]
+
+            command_id = add_command(
+                task_id,
+                command,
+                True,
+                execution_result.get("return_code"),
+                result.get("status", "FAILED")
+            )
+
+            output = compact_result(execution_result)
+
+            add_result(
+                command_id,
+                output
+            )
+
+        update_task_status(
+            task_id,
+            "MAX_STEPS"
         )
 
-    add_message(
-        conversation,
-        "user",
-        execution_message
-    )
+        print(
+            f"\nTask stopped after {MAX_STEPS} steps "
+            "to prevent an endless loop.\n"
+        )
 
-    add_message(
-        conversation,
-        "assistant",
-        follow_up
-    )
+    except Exception as error:
+        update_task_status(
+            task_id,
+            "FAILED"
+        )
 
+        raise error
 
 def read_terminal_input():
     first_line = input("You: ")
@@ -395,7 +409,7 @@ def interactive_mode(extra_prompt=None):
     conversation = [
         {
             "role": "system",
-            "content": SYSTEM_PROMPT
+            "content": NORMAL_PROMPT
         }
     ]
 
@@ -447,9 +461,10 @@ def main():
         conversation = [
             {
                 "role": "system",
-                "content": SYSTEM_PROMPT
+                "content": NORMAL_PROMPT
             }
         ]
+        initialize_database()
 
         handle_agent_turn(
             conversation,

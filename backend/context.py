@@ -4,7 +4,7 @@ import platform
 import shutil
 import subprocess
 from pathlib import Path
-
+import re
 
 CACHE_FILE = Path.home() / ".linux_ai_context.json"
 
@@ -212,50 +212,64 @@ def get_cached_static_context():
 # -----------------------------------
 # CONTEXT SELECTOR
 # -----------------------------------
+def contains_keyword(question, keyword):
+    pattern = rf"(?<!\w){re.escape(keyword)}(?!\w)"
+    return re.search(pattern, question) is not None
 
 def select_context(question):
     question = question.lower()
 
     selected = []
 
-    if any(word in question for word in [
+    # Storage
+    if any(contains_keyword(question, word) for word in [
         "disk", "storage", "filesystem", "file system",
         "space", "full", "df", "du"
     ]):
         selected.append("storage")
 
-    if any(word in question for word in [
-        "network", "networking", "interface", "ip",
+    # Network
+    if any(contains_keyword(question, word) for word in [
+        "network", "networking", "interface", "ip address",
         "route", "routing", "connection", "connectivity",
         "dns", "port", "socket"
     ]):
         selected.append("network")
 
-    if any(word in question for word in [
-        "slow", "cpu", "ram", "memory", "load",
-        "performance", "resource", "high usage"
+    # Resources
+    if any(contains_keyword(question, word) for word in [
+        "slow", "cpu", "load",
+        "performance", "resource", "high usage",
+        "ram", "memory"
     ]):
-        selected.extend(["resources", "processes"])
+        selected.append("resources")
 
-    if any(word in question for word in [
-        "process", "processes", "pid", "running"
+    # Processes
+    if any(contains_keyword(question, word) for word in [
+        "top process",
+        "top processes",
+        "process",
+        "processes",
+        "pid",
+        "running process"
     ]):
         selected.append("processes")
 
-    if any(word in question for word in [
-        "service", "systemctl", "daemon", "nginx",
-        "apache", "ssh", "sshd"
+    # Services
+    if any(contains_keyword(question, word) for word in [
+        "service", "systemctl", "daemon",
+        "nginx", "apache", "ssh", "sshd"
     ]):
         selected.append("services")
 
-    if any(word in question for word in [
-        "directory", "folder", "path", "pwd",
-        "current location"
+    # Location
+    if any(contains_keyword(question, word) for word in [
+        "directory", "folder", "path",
+        "pwd", "current location"
     ]):
         selected.append("location")
 
     return list(dict.fromkeys(selected))
-
 
 # -----------------------------------
 # BUILD SELECTED CONTEXT

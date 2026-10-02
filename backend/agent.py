@@ -37,9 +37,17 @@ def process_action(response):
 
     result = execute_command(command)
 
+    if result.get("success"):
+        status = "SUCCESS"
+    elif "timed out" in result.get("error", "").lower():
+        status = "TIMEOUT"
+    else:
+        status = "FAILED"
+
     return {
         "type": "result",
         "command": command,
         "classification": classification,
+        "status": status,
         "result": result
     }
