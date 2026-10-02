@@ -8,7 +8,7 @@ from groq import Groq
 from context import get_selected_context
 from conversation import add_message
 from agent import process_action
-
+MAX_STEPS = 20
 
 load_dotenv()
 
@@ -25,11 +25,11 @@ if not model:
 client = Groq(api_key=api_key)
 
 
-SYSTEM_PROMPT = """You are a concise Linux Bash terminal AI assistant.
+SYSTEM_PROMPT = """You are a Linux Bash terminal AI agent.
 
 You help users understand, diagnose, and manage Linux systems.
 
-You can inspect the Linux system by proposing commands.
+You can inspect and manage the Linux system by proposing Bash commands.
 
 IMPORTANT:
 Return ONLY valid JSON.
@@ -47,38 +47,24 @@ Rules:
 - Use provided system context as observed evidence.
 - Do not invent system information.
 - Do not claim a cause unless evidence supports it.
-- If more information is needed, request exactly ONE diagnostic command.
-- Never request multiple commands in one response.
-- Commands must be executable without a shell.
-- Do NOT use pipes, redirects, command substitution, semicolons, &&, ||, backticks, or shell operators.
-- Prefer read-only diagnostic commands.
-- Never request rm -rf or other destructive commands unless explicitly required.
-- Do not use sudo.
+- Work on the user's requested task until it is completed or cannot continue.
+- You may request multiple commands during a task, but only ONE command per response.
+- After a command is executed, use its actual output to decide the next step.
+- Never assume a command succeeded.
+- Never invent command output.
+- Do not repeat a command unless there is a reason.
+- If a command fails, analyze the actual error before deciding what to do next.
+- Prefer read-only diagnostic commands when troubleshooting.
+- You may propose commands that require elevated privileges when appropriate.
+- You may propose modifying or destructive commands when they are relevant to the user's request.
+- Never execute a command yourself.
+- The user must explicitly approve every command before execution.
+- Return the exact Bash command you want executed.
+- When a command could cause significant or destructive changes, make the command explicit so the user can review it before approval.
+- When multiple commands are required, execute them one at a time and wait for the actual result before deciding the next command.
+- When the task is complete, return an "answer" action.
 - Keep final answers concise.
 """
-
-
-TROUBLESHOOTING_PROMPT = """You are troubleshooting a Linux system.
-
-Follow this process:
-
-1. OBSERVATION
-   Use only collected evidence.
-
-2. ANALYSIS
-   Explain what the evidence suggests.
-   Do not invent causes.
-
-3. NEXT STEP
-   If more information is needed, request exactly ONE diagnostic command.
-
-Rules:
-- Prefer read-only commands.
-- Never request multiple commands.
-- Do not repeat a command whose result is already available.
-- Clearly distinguish facts from hypotheses.
-"""
-
 
 def ask_ai(messages):
     response = client.chat.completions.create(
@@ -130,9 +116,97 @@ def get_ai_action(conversation, question):
 
 
 def handle_agent_turn(conversation, question):
-    action = get_ai_action(
-        conversation,
-        question
+    task_input = question
+
+    for step in range(MAX_STEPS):
+        action = get_ai_action(
+            conversation,
+            task_input
+        )
+
+        if action.get("action") == "answer":
+            answer = action.get(
+                "content",
+                "No answer returned."
+            )
+
+            print(f"\nAI: {answer}\n")
+
+            add_message(
+                conversation,
+                "user",
+                task_input
+            )
+
+            add_message(
+                conversation,
+                "assistant",
+                json.dumps(action)
+            )
+
+            return
+
+        if action.get("action") != "command":
+            print("AI returned an invalid action.\n")
+            return
+
+        command = action.get("command")
+
+        if not command:
+            print("AI returned an empty command.\n")
+            return
+
+        print(f"\nAI wants to run: {command}")
+
+        result = process_action(
+            json.dumps({
+                "action": "command",
+                "command": command
+            })
+        )
+
+        if result["type"] == "cancelled":
+            print("Task cancelled.\n")
+            return
+
+        if result["type"] == "rejected":
+            print(f"{result['message']}\n")
+            return
+
+        if result["type"] != "result":
+            print("Command execution failed.\n")
+            return
+
+        execution_message = (
+            "The following command was executed on the Linux system.\n\n"
+            f"Command: {result['command']}\n\n"
+            f"Execution result:\n"
+            f"{json.dumps(result['result'], indent=2)}"
+        )
+
+        add_message(
+            conversation,
+            "user",
+            task_input
+        )
+
+        add_message(
+            conversation,
+            "assistant",
+            json.dumps(action)
+        )
+
+        add_message(
+            conversation,
+            "user",
+            execution_message
+        )
+
+        task_input = execution_message
+
+    print(
+        f"\nTask stopped after {MAX_STEPS} steps "
+        "to prevent an endless execution loop.\n"
     )
 
     if action.get("action") == "answer":

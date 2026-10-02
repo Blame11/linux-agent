@@ -1,7 +1,12 @@
+import json
+
 from action import parse_action
 from command_safety import classify_command
 from approval import request_approval
 from executor import execute_command
+
+
+MAX_STEPS = 20
 
 
 def process_action(response):
@@ -16,17 +21,10 @@ def process_action(response):
     command = action["command"]
     classification = classify_command(command)
 
-    if classification == "UNKNOWN":
+    if classification == "INVALID":
         return {
             "type": "rejected",
-            "message": "Command rejected by safety policy.",
-            "command": command
-        }
-
-    if classification == "DANGEROUS":
-        return {
-            "type": "rejected",
-            "message": "Dangerous commands are not executable yet.",
+            "message": "AI returned an empty command.",
             "command": command
         }
 
