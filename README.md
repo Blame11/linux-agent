@@ -380,21 +380,30 @@ destructive commands.
 ## Current limitations
 
 - `ai --troubleshoot` opens an interactive prompt but currently does not pass
-  its specialized prompt into the task loop.
-- Interactive and troubleshooting modes do not initialize SQLite. On a fresh
-  install, run `python backend/task_state.py` before starting them.
+  its specialized prompt into each task request: the task loop builds request
+  messages from only the first system prompt in the conversation.
+- The one-shot CLI initializes SQLite, but interactive and troubleshooting
+  modes do not. On a fresh install, initialize the database with
+  `python backend/task_state.py` before starting those modes.
 - There is no cross-request conversational memory or user-facing task history
-  browser.
-- API exceptions are recorded as a failed task and re-raised; there is no
-  provider-specific retry/backoff or recovery workflow.
-- AI output is parsed with basic JSON handling. Malformed JSON is reported and
-  fails the task, but action schemas are not comprehensively validated.
+  browser, although task history is stored in SQLite and used internally for
+  the active task.
+- Groq request exceptions are not handled specifically at the API call. The
+  task-level exception handler marks the task `FAILED` and propagates the
+  exception; interactive mode catches it and prints an error, while the
+  one-shot path has no equivalent outer CLI handler.
+- AI output parsing accepts JSON and attempts to extract an embedded JSON
+  object when needed. Comprehensive action-schema validation is not
+  implemented.
 - Command approval is not an allowlist, sandbox, or complete security model.
 - Context providers cover a limited set of host facts and commonly available
   Linux tools; availability and permissions vary by distribution and WSL
   configuration.
-- Output is bounded by character truncation, and token counts are approximate.
-- No automated tests or packaging/install metadata are included.
+- Command output is bounded: the executor truncates combined output after
+  12,000 characters, while stored results retain the beginning and end within
+  a 4,000-character limit. Token counts are approximate character-based
+  estimates.
+- No automated test suite or formal packaging/install metadata is included.
 
 ## Roadmap
 
