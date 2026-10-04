@@ -1,8 +1,0 @@
-#!/bin/bash
-
-PROJECT_DIR="$HOME/linux_ai_agent"
-
-source "$PROJECT_DIR/venv/bin/activate"
-
-PYTHONPATH="$PROJECT_DIR/backend" \
-python "$PROJECT_DIR/backend/ai_client.py" "$@"

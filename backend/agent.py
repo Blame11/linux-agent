@@ -1,9 +1,9 @@
 import json
 
-from action import parse_action
-from command_safety import classify_command
-from approval import request_approval
-from executor import execute_command
+from .action import parse_action
+from .command_safety import classify_command
+from .approval import request_approval
+from .executor import execute_command
 
 
 MAX_STEPS = 20

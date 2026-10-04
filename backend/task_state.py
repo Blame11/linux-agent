@@ -1,6 +1,6 @@
 import sqlite3
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 
 
 DB_PATH = Path.home() / ".linux_ai_agent" / "agent.db"
@@ -58,8 +58,36 @@ def initialize_database():
 
     finally:
         connection.close()
+def recover_stale_tasks(max_age_minutes=30):
+    connection = get_connection()
+
+    try:
+        cutoff = (
+            datetime.now()
+            - timedelta(minutes=max_age_minutes)
+        )
+
+        connection.execute(
+            """
+            UPDATE tasks
+            SET status = 'FAILED',
+                updated_at = ?
+            WHERE status = 'RUNNING'
+              AND updated_at < ?
+            """,
+            (
+                datetime.now().isoformat(),
+                cutoff.isoformat(),
+            ),
+        )
+
+        connection.commit()
+
+    finally:
+        connection.close()
 
 def create_task(user_request):
+    recover_stale_tasks()
     connection = get_connection()
 
     try:
@@ -171,7 +199,7 @@ def add_result(command_id, output):
         connection.close()
 
 
-def get_task_history(task_id, limit=3):
+def get_task_history(task_id, limit=2):
     connection = get_connection()
 
     try:

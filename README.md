@@ -74,7 +74,7 @@ for gaps and partial behavior.
 User
   |
   v
-Bash CLI: bash/ai
+CLI: ai
   |
   v
 backend/ai_client.py

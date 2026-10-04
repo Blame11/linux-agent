@@ -5,10 +5,10 @@ import sys
 from dotenv import load_dotenv
 from groq import Groq
 
-from context import get_selected_context
-from conversation import add_message
-from agent import process_action
-from task_state import (
+from .context import get_selected_context
+from .conversation import add_message
+from .agent import process_action
+from .task_state import (
     create_task,
     update_task_status,
     add_command,
@@ -17,21 +17,30 @@ from task_state import (
     initialize_database,
 )
 MAX_STEPS = 20
-MAX_STEPS = 20
 MAX_TASK_HISTORY = 2
 MAX_RESULT_CHARS = 4000
 
-load_dotenv()
+CONFIG_DIR = os.path.expanduser("~/.linux_ai_agent")
+ENV_FILE = os.path.join(CONFIG_DIR, ".env")
+
+load_dotenv(ENV_FILE)
+
+load_dotenv(ENV_FILE)
 
 api_key = os.getenv("GROQ_API_KEY")
 model = os.getenv("GROQ_MODEL")
 
 if not api_key:
-    raise ValueError("GROQ_API_KEY is not configured")
+    raise ValueError(
+        f"GROQ_API_KEY is not configured. "
+        f"Expected configuration file: {ENV_FILE}"
+    )
 
 if not model:
-    raise ValueError("GROQ_MODEL is not configured")
-
+    raise ValueError(
+        f"GROQ_MODEL is not configured. "
+        f"Expected configuration file: {ENV_FILE}"
+    )
 
 client = Groq(api_key=api_key)
 
@@ -101,12 +110,23 @@ def ask_ai(messages):
         f"~{estimated_input_tokens:.0f} tokens"
     )
 
-    response = client.chat.completions.create(
-        model=model,
-        messages=messages
-    )
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=messages
+        )
+    except Exception as error:
+        print(
+            f"\nAI API request failed: "
+            f"{type(error).__name__}: {error}\n"
+        )
+        return None
 
     output = response.choices[0].message.content
+
+    if not output:
+        print("\nAI returned an empty response.\n")
+        return None
 
     output_chars = len(output)
     estimated_output_tokens = output_chars / 4
@@ -148,7 +168,8 @@ def get_ai_action(conversation, question):
     )
 
     response = ask_ai(messages)
-
+    if response is None:
+        return None
     try:
         return json.loads(response)
     except json.JSONDecodeError:
@@ -208,17 +229,7 @@ def handle_agent_turn(conversation, question):
             ]
 
             for item in task_history:
-                output = item["output"] or ""
-
-                if len(output) > MAX_RESULT_CHARS:
-                    half = MAX_RESULT_CHARS // 2
-
-                    output = (
-                        output[:half]
-                        + "\n...[middle of result truncated]...\n"
-                        + output[-half:]
-                    )
-
+                output = compact_text(item["output"] or "")
                 return_code = item["return_code"]
 
                 messages.append({
@@ -255,7 +266,10 @@ def handle_agent_turn(conversation, question):
                     f"~tokens={len(content) / 4:.0f}"
                 )
             response = ask_ai(messages)
-
+            if response is None:
+                update_task_status(task_id, "FAILED")
+                return
+            
             try:
                 action = json.loads(response)
             except json.JSONDecodeError:
@@ -372,7 +386,16 @@ def handle_agent_turn(conversation, question):
             f"\nTask stopped after {MAX_STEPS} steps "
             "to prevent an endless loop.\n"
         )
+        
+    except KeyboardInterrupt:
+        update_task_status(
+            task_id,
+            "CANCELLED"
+        )
 
+        print("\nTask cancelled.\n")
+        return
+    
     except Exception as error:
         update_task_status(
             task_id,
@@ -409,15 +432,9 @@ def interactive_mode(extra_prompt=None):
     conversation = [
         {
             "role": "system",
-            "content": NORMAL_PROMPT
+            "content": extra_prompt or NORMAL_PROMPT
         }
     ]
-
-    if extra_prompt:
-        conversation.append({
-            "role": "system",
-            "content": extra_prompt
-        })
 
     print("Linux AI Assistant")
     print("Type 'exit' or 'quit' to leave.")
@@ -449,6 +466,7 @@ def interactive_mode(extra_prompt=None):
 
 
 def main():
+    initialize_database()
     if len(sys.argv) > 1:
         if sys.argv[1] == "--troubleshoot":
             interactive_mode(
@@ -464,7 +482,6 @@ def main():
                 "content": NORMAL_PROMPT
             }
         ]
-        initialize_database()
 
         handle_agent_turn(
             conversation,

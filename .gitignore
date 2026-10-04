@@ -2,3 +2,5 @@
 venv/
 __pycache__/
 .linux_ai_context.json
+*.egg-info/
+build/
