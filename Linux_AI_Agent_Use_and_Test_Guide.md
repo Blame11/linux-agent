@@ -118,7 +118,9 @@ cd ~/hello-tushar && python3 -m http.server 8080
 
 **Important:** Do not blindly approve commands. Review each command before entering `y`.
 
-After the server starts, test it with:
+If the approved server command is still running after five seconds, the agent
+returns control while leaving the server running and reports its PID. Then
+test it with:
 
 ```text
 Check whether my web server is running and verify that it serves "Hello Tushar Kand".

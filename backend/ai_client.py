@@ -5,6 +5,7 @@ import sys
 from dotenv import load_dotenv
 from groq import Groq
 
+from .action import parse_ai_response
 from .context import get_selected_context
 from .conversation import add_message
 from .agent import process_action
@@ -67,6 +68,11 @@ Core rules:
 - After execution, use the actual result to decide the next step.
 - Never assume a command succeeded.
 - If a command fails, analyze the actual error before continuing.
+- Commands that are still running after the executor's five-second startup
+  window are left running in the background. Use their returned PID and actual
+  output to verify them; do not claim that they exited.
+- When the task is to start a service, prefer launching it detached, redirect
+  stdout/stderr to /dev/null or a requested log, and print its PID.
 - Complete the task until finished or unable to continue.
 - When finished, return an answer action.
 - Keep answers concise.
@@ -97,19 +103,6 @@ Troubleshooting:
 """
 
 def ask_ai(messages):
-    input_chars = sum(
-        len(message.get("content", ""))
-        for message in messages
-    )
-
-    estimated_input_tokens = input_chars / 4
-
-    print(
-        f"[Token estimate] "
-        f"input chars={input_chars}, "
-        f"~{estimated_input_tokens:.0f} tokens"
-    )
-
     try:
         response = client.chat.completions.create(
             model=model,
@@ -127,15 +120,6 @@ def ask_ai(messages):
     if not output:
         print("\nAI returned an empty response.\n")
         return None
-
-    output_chars = len(output)
-    estimated_output_tokens = output_chars / 4
-
-    print(
-        f"[Token estimate] "
-        f"output chars={output_chars}, "
-        f"~{estimated_output_tokens:.0f} tokens"
-    )
 
     return output
 
@@ -170,13 +154,7 @@ def get_ai_action(conversation, question):
     response = ask_ai(messages)
     if response is None:
         return None
-    try:
-        return json.loads(response)
-    except json.JSONDecodeError:
-        return {
-            "action": "answer",
-            "content": response
-        }
+    return parse_ai_response(response)
 def compact_text(text, max_chars=MAX_RESULT_CHARS):
     if not text:
         return ""
@@ -198,7 +176,11 @@ def compact_result(result):
 
 def handle_agent_turn(conversation, question):
     task_id = create_task(question)
-
+    add_message(
+        conversation,
+        "user",
+        question
+    )
     try:
         for step in range(MAX_STEPS):
 
@@ -207,39 +189,54 @@ def handle_agent_turn(conversation, question):
                 limit=MAX_TASK_HISTORY
             )
 
-            messages = [
-                conversation[0],
-                {
-                    "role": "system",
-                    "content": (
-                        "Current Linux system context:\n"
-                        + json.dumps(
-                            get_selected_context(question),
-                            indent=2
-                        )
+            messages = []
+
+            # Keep the main AI instruction as the first system message.
+            if conversation and conversation[0]["role"] == "system":
+                messages.append(conversation[0])
+
+            # Add current system context immediately after the main prompt.
+            messages.append({
+                "role": "system",
+                "content": (
+                    "Current Linux system context:\n"
+                    + json.dumps(
+                        get_selected_context(question),
+                        indent=2
                     )
-                },
-                {
-                    "role": "user",
-                    "content": (
-                        "Original user task:\n"
-                        + question
-                    )
-                }
-            ]
+                )
+            })
+
+            # Add previous conversation history.
+            messages.extend(conversation[1:])
 
             for item in task_history:
                 output = compact_text(item["output"] or "")
                 return_code = item["return_code"]
+                status = item["status"]
+
+                if status == "RUNNING":
+                    command_label = "COMMAND STILL RUNNING"
+                    result_details = (
+                        "The command did not exit during its startup window "
+                        "and was left running in the background. Do not "
+                        "repeat it; inspect or verify the process using "
+                        "its actual output and PID."
+                    )
+                else:
+                    command_label = "COMMAND EXECUTION RESULT"
+                    result_details = (
+                        "Do not repeat a successful command unless its result "
+                        "is insufficient or the task requires verification."
+                    )
 
                 messages.append({
                     "role": "user",
                     "content": (
-                        "COMPLETED COMMAND\n"
-                        "The following command has already been executed. "
-                        "Do not execute it again unless the task specifically "
-                        "requires repeating it.\n\n"
+                        f"{command_label}\n"
+                        f"{result_details}\n\n"
                         f"Command:\n{item['command']}\n\n"
+                        f"Status: {status}\n\n"
                         f"Return code: {return_code}\n\n"
                         f"Actual output:\n{output}"
                     )
@@ -249,69 +246,109 @@ def handle_agent_turn(conversation, question):
                 messages.append({
                     "role": "user",
                     "content": (
-                        "The completed commands above are historical evidence "
-                        "for this task. Do not repeat a successful command "
-                        "unless its result is insufficient or the task requires "
-                        "verification. Decide whether to return the final answer "
-                        "or request one new command."
+                        "The command results above are evidence for this task. "
+                        "Do not repeat a successful command unless its result "
+                        "is insufficient or the task requires verification. "
+                        "Decide whether to return the final answer or request "
+                        "one new command."
                     )
                 })
 
-            for index, message in enumerate(messages):
-                content = message.get("content", "")
-                print(
-                    f"[Prompt part {index}] "
-                    f"role={message.get('role')} "
-                    f"chars={len(content)} "
-                    f"~tokens={len(content) / 4:.0f}"
-                )
             response = ask_ai(messages)
             if response is None:
                 update_task_status(task_id, "FAILED")
                 return
             
-            try:
-                action = json.loads(response)
-            except json.JSONDecodeError:
-                start = response.find("{")
-                end = response.rfind("}")
+            action = parse_ai_response(response)
+            if action is None:
+                print(
+                    "\nAI returned an invalid response/action."
+                    f"\nRaw response:\n{response}\n"
+                )
+                update_task_status(task_id, "FAILED")
+                return
 
-                if start != -1 and end != -1 and end > start:
-                    try:
-                        action = json.loads(response[start:end + 1])
-                    except json.JSONDecodeError:
-                        print(f"\nAI returned invalid JSON:\n{response}\n")
-                        update_task_status(task_id, "FAILED")
-                        return
-                else:
-                    print(f"\nAI returned invalid JSON:\n{response}\n")
-                    update_task_status(task_id, "FAILED")
-                    return
-                
+            if not isinstance(action, dict):
+                print(
+                    "\nAI returned an invalid action."
+                    f"\nParsed action: {action}"
+                    f"\nRaw response: {response}\n"
+                )
+                update_task_status(
+                    task_id,
+                    "FAILED"
+                )
+                return
+
             if action.get("action") == "answer":
                 answer = action.get(
                     "content",
                     "No answer returned."
                 )
 
+                if not isinstance(answer, str):
+                    print(
+                        "\nAI returned an invalid answer."
+                        f"\nParsed action: {action}"
+                        f"\nRaw response: {response}\n"
+                    )
+                    update_task_status(
+                        task_id,
+                        "FAILED"
+                    )
+                    return
+
                 print(f"\nAI: {answer}\n")
-                update_task_status(task_id, "COMPLETED")
+
+                add_message(
+                    conversation,
+                    "assistant",
+                    answer
+                )
+
+                update_task_status(
+                    task_id,
+                    "COMPLETED"
+                )
                 return
 
             if action.get("action") != "command":
-                print("AI returned an invalid action.\n")
-                update_task_status(task_id, "FAILED")
+                print(
+                    "\nAI returned an invalid action."
+                    f"\nParsed action: {action}"
+                    f"\nRaw response: {response}\n"
+                )
+                update_task_status(
+                    task_id,
+                    "FAILED"
+                )
                 return
 
             command = action.get("command")
 
-            if not command:
-                print("AI returned an empty command.\n")
-                update_task_status(task_id, "FAILED")
+            if not isinstance(command, str) or not command.strip():
+                print(
+                    "\nAI returned an empty command."
+                    f"\nParsed action: {action}"
+                    f"\nRaw response: {response}\n"
+                )
+                update_task_status(
+                    task_id,
+                    "FAILED"
+                )
                 return
 
-            print(f"\nAI wants to run: {command}")
+            command = command.strip()
 
+            print(f"\nAI wants to run: {command}")
+            add_message(
+                conversation,
+                "assistant",
+                json.dumps({
+                    "action": "command",
+                    "command": command
+                })
+            )
             result = process_action(
                 json.dumps({
                     "action": "command",
@@ -361,7 +398,22 @@ def handle_agent_turn(conversation, question):
                 return
 
             execution_result = result["result"]
+            if result["status"] == "RUNNING":
+                print(f"\n{execution_result['message']}\n")
 
+            conversation_result = compact_result(execution_result)
+
+            add_message(
+                conversation,
+                "user",
+                (
+                    f"Command execution status: {result['status']}\n"
+                    f"Command: {command}\n"
+                    f"Return code: "
+                    f"{execution_result.get('return_code')}\n"
+                    f"Output:\n{conversation_result}"
+                )
+            )
             command_id = add_command(
                 task_id,
                 command,

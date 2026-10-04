@@ -1,4 +1,21 @@
-MAX_MESSAGES = 6
+MAX_MESSAGES = 12
+MAX_CONVERSATION_RESULT_CHARS = 2000
+
+
+def compact_text(text, max_chars=MAX_CONVERSATION_RESULT_CHARS):
+    if not text:
+        return ""
+
+    if len(text) <= max_chars:
+        return text
+
+    half = max_chars // 2
+
+    return (
+        text[:half]
+        + "\n...[conversation result truncated]...\n"
+        + text[-half:]
+    )
 
 
 def add_message(messages, role, content):

@@ -50,13 +50,18 @@ the limitations called out below.
   {"action":"answer","content":"..."}
   ```
 
+- Response parsing for valid JSON actions, JSON actions embedded in text, and
+  explicit `execute_bash` tool-call markup. A recovered tool call becomes a
+  proposed command and still requires the normal `y/N` approval.
 - A prompt policy that asks for one command at a time, requires approval, and
   tells the model to use actual results, preserve observed values, and not
   invent output.
 - A confirmation prompt before each command. Only `y` or `yes` approves;
   anything else cancels the task.
 - Bash execution through `/bin/bash`, including pipes and other shell syntax,
-  with captured stdout/stderr, a return code, and a 300-second timeout.
+  with captured stdout/stderr and a return code. If a command has not exited
+  after a five-second startup window, it is left running in the background
+  and its PID and startup output are returned.
 - A task loop capped at 20 command steps. After each approved command, its
   result is recorded and supplied to the model on the next step.
 - SQLite records for tasks, commands, approval state, command status, return
@@ -106,7 +111,9 @@ Approval prompt -- no --> cancel and record
 4. For a command, the exact command text is displayed and awaits explicit
    approval.
 5. An approved command runs locally through Bash. The executor captures its
-   output and return code, or reports a timeout/execution error.
+   output and return code. If it is still running after five seconds, the
+   executor leaves it running in the background and returns its PID and
+   startup output so the agent can continue with verification.
 6. The task and command result are stored in SQLite. For another step, the
    agent sends recent command history and actual results back to the model.
 7. The loop ends with an answer, a cancellation/failure, or the 20-step limit.
@@ -339,8 +346,9 @@ The database is stored at:
 It contains `tasks`, `commands`, and `results` tables. Records include the
 original task, command text, whether it was approved, command status, return
 code when available, result output, and timestamps. Command statuses include
-`SUCCESS`, `FAILED`, `CANCELLED`, and `TIMEOUT`. Tasks also receive overall
-statuses such as `RUNNING`, `COMPLETED`, `FAILED`, `CANCELLED`, or `MAX_STEPS`.
+`RUNNING`, `SUCCESS`, `FAILED`, and `CANCELLED` (older records may also contain
+`TIMEOUT`). Tasks also receive overall statuses such as `RUNNING`, `COMPLETED`,
+`FAILED`, `CANCELLED`, or `MAX_STEPS`.
 
 The current agent supplies at most the latest two command records from the
 active task back to the model. There is no user-facing history browser or

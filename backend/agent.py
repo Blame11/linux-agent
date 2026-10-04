@@ -37,10 +37,10 @@ def process_action(response):
 
     result = execute_command(command)
 
-    if result.get("success"):
+    if result.get("running"):
+        status = "RUNNING"
+    elif result.get("success"):
         status = "SUCCESS"
-    elif "timed out" in result.get("error", "").lower():
-        status = "TIMEOUT"
     else:
         status = "FAILED"
 

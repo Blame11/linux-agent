@@ -210,6 +210,7 @@ def get_task_history(task_id, limit=2):
                 c.command,
                 c.approved,
                 c.return_code,
+                c.status,
                 r.output
             FROM commands c
             LEFT JOIN results r

@@ -1,7 +1,8 @@
 import subprocess
+import tempfile
 
 MAX_OUTPUT = 12000
-COMMAND_TIMEOUT = 300
+COMMAND_STARTUP_TIMEOUT = 5
 
 
 def execute_command(command):
@@ -14,21 +15,55 @@ def execute_command(command):
         }
 
     try:
-        result = subprocess.run(
-            command,
-            shell=True,
-            executable="/bin/bash",
-            capture_output=True,
-            text=True,
-            timeout=COMMAND_TIMEOUT,
-        )
+        # Use a temporary file instead of PIPE.
+        #
+        # Background processes can inherit stdout/stderr without keeping
+        # subprocess.PIPE open indefinitely.
+        with tempfile.TemporaryFile(
+            mode="w+",
+            encoding="utf-8"
+        ) as output_file:
 
-        output = result.stdout
+            process = subprocess.Popen(
+                command,
+                shell=True,
+                executable="/bin/bash",
+                stdout=output_file,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
 
-        if result.stderr:
-            if output:
-                output += "\n"
-            output += result.stderr
+            try:
+                return_code = process.wait(
+                    timeout=COMMAND_STARTUP_TIMEOUT
+                )
+            except subprocess.TimeoutExpired:
+                if process.poll() is None:
+                    output_file.seek(0)
+                    output = output_file.read()
+
+                    if len(output) > MAX_OUTPUT:
+                        output = (
+                            output[:MAX_OUTPUT]
+                            + "\n...[output truncated]"
+                        )
+
+                    return {
+                        "success": True,
+                        "running": True,
+                        "pid": process.pid,
+                        "return_code": None,
+                        "output": output,
+                        "message": (
+                            "Command is still running; it was left running "
+                            f"in the background (PID {process.pid})."
+                        )
+                    }
+
+                return_code = process.returncode
+
+            output_file.seek(0)
+            output = output_file.read()
 
         if len(output) > MAX_OUTPUT:
             output = (
@@ -37,15 +72,10 @@ def execute_command(command):
             )
 
         return {
-            "success": result.returncode == 0,
-            "return_code": result.returncode,
+            "success": return_code == 0,
+            "running": False,
+            "return_code": return_code,
             "output": output
-        }
-
-    except subprocess.TimeoutExpired:
-        return {
-            "success": False,
-            "error": f"Command timed out after {COMMAND_TIMEOUT} seconds."
         }
 
     except Exception as error:

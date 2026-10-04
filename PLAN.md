@@ -24,8 +24,8 @@ loop:
 - Selective dynamic context chosen through word-aware keyword matching.
 - Structured JSON actions for either a command or a final answer.
 - User approval before every non-empty command is executed.
-- Bash executor using `/bin/bash`, capturing combined stdout/stderr, return
-  codes, and timeout errors.
+- Bash executor using `/bin/bash`, capturing combined stdout/stderr and return
+  codes, and leaving long-running commands active with their PID reported.
 - SQLite state for tasks, commands, approval values, command status, return
   codes, output, and timestamps.
 - A multi-step loop that feeds actual execution results and return codes back
@@ -50,17 +50,16 @@ claim the concerns are fully solved.
 | API error handling | A task-level exception path marks the task failed and re-raises; interactive mode prints an error. | Classify provider/configuration/network failures clearly; provide useful CLI feedback and bounded recovery where appropriate. |
 | Better task history | SQLite stores tasks, commands, and results; current-task context uses up to two prior command records. | Add a deliberate way to inspect/search task history and improve task summaries without treating stale data as current evidence. |
 | Deterministic output compression | Executor output has a character cap; persisted results retain beginning and end above the history limit. | Consolidate duplicated truncation logic, define boundary behavior, and cover it with tests. This is truncation, not semantic compression. |
-| Timeout handling | Commands have a 300-second timeout and a `TIMEOUT` command status. | Verify timeout recording/output on every execution path and make the limit/reporting behavior consistent. |
-| Execution-state tracking | Tasks and commands persist basic statuses, approval, and return codes. | Define and validate state transitions; address unset return codes for timeouts and cancelled commands consistently. |
-| Malformed AI response handling | The client attempts JSON parsing, then tries to parse a JSON object embedded in the response; invalid JSON fails the task. | Validate the top-level type, action name, required fields, and content types before accessing them; report malformed actions consistently. |
-| Robust command execution | Commands run with Bash syntax, captured output, and generic exception/timeout handling. | Test exit errors, launch failures, large output, timeout behavior, and terminal interruption; ensure recorded evidence always matches what was executed. |
+| Long-running commands | Commands still active after a five-second startup window are left running and recorded with `RUNNING` status and a PID in the result. | Test process lifecycle and improve bounded output handling and observability for detached processes. |
+| Execution-state tracking | Tasks and commands persist statuses, approval, return codes, and output; active commands use `RUNNING`. | Define and validate state transitions; address unset return codes for active and cancelled commands consistently. |
+| Malformed AI response handling | The client normalizes valid JSON actions, embedded JSON actions, plain-text answers, and explicit `execute_bash` tool-call markup; malformed structured responses fail without executing. Recovered commands still pass through user approval. | Expand provider-format coverage and keep parser behavior consistent across all AI response paths. |
+| Robust command execution | Commands run with Bash syntax, captured output, and generic exception handling. | Test launch failures, large output, and terminal interruption; ensure recorded evidence always matches what was executed. |
 | Prompt/token optimization | Prompts are separated into common/normal/troubleshooting forms; character-based token estimates are printed. | Preserve the selected mode prompt, reduce duplicated context/history construction, and measure prompt size without presenting estimates as exact token usage. |
 
 Immediate consistency fixes should include initializing the SQLite schema for
 interactive/troubleshooting mode and ensuring `--troubleshoot` actually passes
-the troubleshooting prompt to each task. The project should add focused tests
-when a test harness is introduced; no automated suite exists in the current
-repository.
+the troubleshooting prompt to each task. Focused executor tests now exist;
+expand automated coverage as reliability work continues.
 
 ## PHASE 3 — SECURITY
 
