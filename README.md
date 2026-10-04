@@ -14,12 +14,12 @@ interpret evidence and suggest the next step.
 
 - **COMPLETED** — the basic Bash-to-Groq request, user-approved Bash execution,
   result feedback, and SQLite persistence loop.
-- **IN PROGRESS** — reliability work, including error handling, history,
-  malformed-response handling, and prompt/token optimization.
-- **PLANNED** — broader Linux diagnostics, persistent intelligence, and more
-  advanced investigate/observe/verify workflows.
-- **SKIPPED** — Prompt Guard, command allowlists, and a broader additional
-  security model for now.
+- **IN PROGRESS** — reliability work, including lifecycle management for
+  background commands, better task history, and broader regression coverage.
+- **PLANNED** — more Linux diagnostics and carefully scoped
+  investigate/observe/verify workflows.
+- **DEFERRED** — command allowlists, sandboxing, and a broader security model.
+  These are not current features or guarantees.
 
 These labels describe the current project state. The completed core still has
 the limitations called out below.
@@ -71,7 +71,7 @@ the limitations called out below.
 - A task loop capped at 20 command steps. After each approved command, its
   result is recorded and supplied to the model on the next step.
 - SQLite records for tasks, commands, approval state, command status, return
-  codes, and captured results.
+  codes, captured results, and tracked background processes.
 - Bounded command output and task-result handling.
 
 These are implementation facts, not a guarantee that every host tool or
@@ -358,30 +358,61 @@ destructive commands.
 - There is no cross-request conversational memory or user-facing task history
   browser, although task history is stored in SQLite and used internally for
   the active task.
-- Groq request exceptions are not handled specifically at the API call. The
-  task-level exception handler marks the task `FAILED` and propagates the
-  exception; interactive mode catches it and prints an error, while the
-  one-shot path has no equivalent outer CLI handler.
+- The application currently depends on GroqCloud and requires both
+  `GROQ_API_KEY` and `GROQ_MODEL`; there is no provider fallback.
+- Provider errors are printed and the active task is marked failed. There is
+  no retry/backoff policy, and one-shot failures do not have the same outer
+  error presentation as interactive mode.
 - AI output parsing accepts valid JSON actions and standalone recognized
   `execute_bash` tool-call blocks. JSON examples embedded in prose are treated
-  as prose; comprehensive action-schema validation is not implemented.
-- Command approval is not an allowlist, sandbox, or complete security model.
+  as prose. This parser supports a small set of response shapes rather than a
+  general provider tool-calling protocol.
+- The five-second startup threshold applies to every command, not just
+  services. A long but finite build or installation continues in the
+  background instead of waiting for completion in the current terminal turn.
+- Background status and output are refreshed by a detached per-process
+  monitor. If that monitor cannot start or exits unexpectedly, updates are not
+  continuous; status can still refresh when task history is read.
+- Long-running command logs are capped at 1 MiB and retained for seven days
+  after completion. Output beyond the cap is discarded. Completed-command
+  output is limited to 12,000 characters, and stored result text to about
+  4,000 characters.
+- The command classifier labels every non-empty command `USER_APPROVAL`; it
+  does not evaluate risk. Approval is not an allowlist, sandbox, or guarantee
+  that a command is safe. Bash shell syntax is allowed.
 - Context providers cover a limited set of host facts and commonly available
   Linux tools; availability and permissions vary by distribution and WSL
-  configuration.
-- Command output is bounded: completed command output is limited to 12,000
-  characters, persistent process logs to 1 MiB, and stored result text to
-  about 4,000 characters.
-- The `USER_APPROVAL` command label is not a risk assessment. Every non-empty
-  command still requires explicit user approval, but approval is not a
-  sandbox or guarantee that a command is safe.
+  configuration. Static host facts are cached and are not automatically
+  refreshed.
+- The model receives at most two recent command records for the active task.
+  There is no user-facing command/process management interface.
+- Only GroqCloud is supported today; locally hosted model servers and
+  configurable API-compatible providers are not implemented.
 
-## Roadmap
+## Future plans
 
-Current implementation status and developer-facing work items are maintained
-in [PLAN.md](./PLAN.md). In short, the core loop is present; reliability work is
-in progress; expanded Linux diagnostics and persistent intelligence remain
-planned. Prompt Guard and command allowlists are skipped for now.
+Planned work is tracked in [PLAN.md](./PLAN.md). Near-term priorities are:
+
+- Add configurable model providers, including local servers that expose an
+  OpenAI-compatible API, such as Ollama, LM Studio, or vLLM. A future
+  configuration could select a provider, base URL, and model, with an API key
+  optional when the server does not require authentication. These settings
+  are illustrative and are not supported by the current implementation.
+- Improve reliability and regression tests for process monitoring, command
+  failures, output limits, and task-state transitions.
+- Add a user-facing way to inspect task history and manage tracked background
+  processes.
+- Expand evidence-gathering providers for logs, packages, service details,
+  network routes/DNS, and targeted process diagnostics.
+- Build more explicit investigate/observe/verify workflows while keeping
+  observed facts separate from model inferences.
+- Evaluate better history selection and summaries before considering
+  persistent cross-task memory or semantic search.
+
+Security work such as command allowlists and sandboxing is deferred. The
+current approval prompt remains the execution checkpoint; the project does
+not claim that it makes arbitrary Bash commands safe. Adding a local model
+provider would not by itself change the command approval requirement.
 
 ## License
 
