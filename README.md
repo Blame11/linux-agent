@@ -28,8 +28,9 @@ the limitations called out below.
 
 **COMPLETED — implemented behavior in the current source:**
 
-- Bash launchers for a one-shot request (`ai "..."`), an interactive prompt
-  (`ai`), and a troubleshooting entry point (`ai --troubleshoot`).
+- CLI entry points for a one-shot request (`ai "..."`), an interactive prompt
+  (`ai`), a troubleshooting entry point (`ai --troubleshoot`), and static
+  context output (`ai-context`).
 - GroqCloud chat completions using the Groq Python client. The model and API
   key are read from `GROQ_MODEL` and `GROQ_API_KEY`.
 - A static Linux context (OS, kernel, architecture, hostname, user, and shell)
@@ -50,9 +51,10 @@ the limitations called out below.
   {"action":"answer","content":"..."}
   ```
 
-- Response parsing for valid JSON actions, JSON actions embedded in text, and
-  explicit `execute_bash` tool-call markup. A recovered tool call becomes a
-  proposed command and still requires the normal `y/N` approval.
+- Response parsing for valid JSON actions and standalone explicit
+  `execute_bash` tool-call markup. A recovered tool call becomes a proposed
+  command and still requires the normal `y/N` approval. JSON examples embedded
+  in prose are treated as prose, not executable actions.
 - A prompt policy that asks for one command at a time, requires approval, and
   tells the model to use actual results, preserve observed values, and not
   invent output.
@@ -70,8 +72,7 @@ the limitations called out below.
   result is recorded and supplied to the model on the next step.
 - SQLite records for tasks, commands, approval state, command status, return
   codes, and captured results.
-- Bounded output handling and approximate character-based token estimates for
-  development visibility.
+- Bounded command output and task-result handling.
 
 These are implementation facts, not a guarantee that every host tool or
 provider request will succeed. See [Current limitations](#current-limitations)
@@ -130,34 +131,8 @@ The application does not treat a suggested command as evidence that it ran or
 succeeded. The result and return code are the evidence used for subsequent
 steps.
 
-## Project structure
-
-```text
-linux_ai_agent/
-├── backend/
-│   ├── action.py          # Parse command actions
-│   ├── agent.py           # Approval, execution, and result status
-│   ├── ai_client.py       # CLI flow, prompts, Groq calls, and task loop
-│   ├── approval.py        # User confirmation
-│   ├── command.py         # Text command extraction helper
-│   ├── command_safety.py  # Empty-command check and approval classification
-│   ├── context.py         # Linux context providers, cache, and selection
-│   ├── conversation.py    # Message-list helper
-│   ├── executor.py        # Bash subprocess execution
-│   ├── output_collector.py # Bounded background command output
-│   ├── process_monitor.py # Background process status monitor
-│   └── task_state.py      # SQLite schema and persistence
-├── tests/                 # Focused parser and executor tests
-├── install.sh             # System-wide installer
-├── pyproject.toml         # Package metadata and CLI entry points
-├── .env                  # Local configuration; ignored by Git
-├── .gitignore
-├── LICENSE
-└── LICENSE.txt
-```
-
-Focused tests are in `tests/` and can be run with
-`python -m pytest -q`.
+For the complete current module reference, request flow, and architecture
+diagrams, see [ARCHITECTURE.md](./ARCHITECTURE.md).
 
 ## Requirements
 
@@ -192,18 +167,19 @@ installer. User configuration and task data remain under
 
 ## Environment configuration
 
-Create a local `.env` file in the project root. Do not commit or publish the
-API key:
+Create `~/.linux_ai_agent/.env` for the user account that will run `ai`. Do not
+put this file in the repository or expose the API key:
 
 ```dotenv
 GROQ_API_KEY=<your GroqCloud API key>
 GROQ_MODEL=qwen/qwen3.8-27b
 ```
 
-`.env` is ignored by Git. The application requires both variables and raises an
-error if either is unset; there is no model fallback in the source. Keep the
-key private and replace the placeholder locally with the key from your
-provider.
+The application requires both variables and raises an error if either is
+unset; there is no model fallback in the source. Keep this file private with
+permissions such as `chmod 600 ~/.linux_ai_agent/.env`, and replace the
+placeholder locally with the key from your provider. Run `ai` as that user,
+not with `sudo`; `ai-context` does not require Groq credentials.
 
 ## Running the agent
 
