@@ -120,6 +120,59 @@ to Bash with shell syntax enabled. The current command classifier labels each
 non-empty command `USER_APPROVAL`; it does not determine whether a command is
 safe or dangerous.
 
+## Repository root layout
+
+The source-controlled project files currently have this layout:
+
+```text
+linux_ai_agent/
+├── backend/                         # Agent implementation
+│   ├── __init__.py
+│   ├── action.py                    # Model-response parsing
+│   ├── agent.py                     # Approval and execution boundary
+│   ├── ai_client.py                 # Provider requests and task loop
+│   ├── approval.py                  # User y/N confirmation
+│   ├── cli.py                       # ai and ai-context entry points
+│   ├── command.py                   # Command-text helper
+│   ├── command_safety.py            # Empty-command check and generic label
+│   ├── context.py                   # Linux context collection
+│   ├── conversation.py              # Conversation/history helpers
+│   ├── executor.py                  # Local Bash execution
+│   ├── output_collector.py          # Bounded background output logging
+│   ├── process_monitor.py           # Background-process monitoring
+│   └── task_state.py                # SQLite persistence and status refresh
+├── tests/                           # Automated regression tests
+│   ├── test_action.py
+│   ├── test_cli.py
+│   └── test_executor.py
+├── ARCHITECTURE.md                  # Request flow, modules, and storage
+├── LICENSE                          # Mozilla Public License 2.0
+├── Linux_AI_Agent_Installation_Guide.md
+├── Linux_AI_Agent_Use_and_Test_Guide.md
+├── PLAN.md                          # Development status and future work
+├── README.md                        # User-facing overview and instructions
+├── install.sh                       # System installation and CLI links
+├── pyproject.toml                   # Package metadata and dependencies
+└── .gitignore                       # Excludes local/generated files
+```
+
+The current working checkout also has local, generated directories that are
+not part of the source tree:
+
+```text
+.git/                  # Git repository metadata
+.pytest_cache/          # Pytest's local cache
+.venv/                  # Local Python development environment
+venv/                   # Another local Python environment
+build/                  # Generated package build output
+linux_ai_agent.egg-info/ # Generated package metadata
+```
+
+Do not store API keys or runtime task data in the repository. The `.env`
+configuration, SQLite database, and long-running command logs are stored
+outside it in the user's home directory, as listed in
+[Persistence and files](#persistence-and-files).
+
 ## Backend module reference
 
 | Module | Responsibility |
