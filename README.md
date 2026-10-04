@@ -61,7 +61,11 @@ the limitations called out below.
 - Bash execution through `/bin/bash`, including pipes and other shell syntax,
   with captured stdout/stderr and a return code. If a command has not exited
   after a five-second startup window, it is left running in the background
-  and its PID and startup output are returned.
+  and its PID, process group, startup output, and private log path are returned.
+  A background monitor refreshes its status and output independently of AI
+  turns. Long-running command logs are capped at 1 MiB and kept for up to
+  seven days after completion. Logs for commands that finish within the
+  startup window are removed after their output has been recorded.
 - A task loop capped at 20 command steps. After each approved command, its
   result is recorded and supplied to the model on the next step.
 - SQLite records for tasks, commands, approval state, command status, return
@@ -112,8 +116,12 @@ Approval prompt -- no --> cancel and record
    approval.
 5. An approved command runs locally through Bash. The executor captures its
    output and return code. If it is still running after five seconds, the
-   executor leaves it running in the background and returns its PID and
-   startup output so the agent can continue with verification.
+   executor leaves it running in the background and returns its PID, process
+   group, private log path, and startup output so the agent can continue with
+   verification. A detached monitor refreshes status and output every second.
+   Long-running command logs are capped at 1 MiB and removed seven days after
+   completion; short-command temporary logs are removed after output capture.
+   Process-group signals and log reads still require approved shell commands.
 6. The task and command result are stored in SQLite. For another step, the
    agent sends recent command history and actual results back to the model.
 7. The loop ends with an answer, a cancellation/failure, or the 20-step limit.
@@ -134,28 +142,30 @@ linux_ai_agent/
 │   ├── command.py         # Text command extraction helper
 │   ├── command_safety.py  # Empty-command check and approval classification
 │   ├── context.py         # Linux context providers, cache, and selection
-│   ├── conversation.py   # Message-list helper
+│   ├── conversation.py    # Message-list helper
 │   ├── executor.py        # Bash subprocess execution
+│   ├── output_collector.py # Bounded background command output
+│   ├── process_monitor.py # Background process status monitor
 │   └── task_state.py      # SQLite schema and persistence
-├── bash/
-│   ├── ai                # Main CLI launcher
-│   └── ai-context        # Print static Linux context
+├── tests/                 # Focused parser and executor tests
+├── install.sh             # System-wide installer
+├── pyproject.toml         # Package metadata and CLI entry points
 ├── .env                  # Local configuration; ignored by Git
 ├── .gitignore
 ├── LICENSE
 └── LICENSE.txt
 ```
 
-There is no dependency manifest or automated test suite in the current tracked
-project.
+Focused tests are in `tests/` and can be run with
+`python -m pytest -q`.
 
 ## Requirements
 
-- Linux with `/bin/bash` and Python 3.
+- Linux with `/bin/bash` and Python 3.14 or newer.
 - A GroqCloud account and API key.
-- Python packages `groq` and `python-dotenv`.
-- The Bash launchers currently expect the project at
-  `~/linux_ai_agent`.
+- `sudo` access to install the application system-wide. The installer creates
+  an isolated environment under `/opt/linux-ai-agent/venv` and installs the
+  Python dependencies there.
 - Some optional context providers use host commands such as `free`, `ss`,
   `ps`, and `systemctl`. Context may be unavailable or reported as unknown
   where a command or service manager is absent.
@@ -165,37 +175,20 @@ WSL2.
 
 ## Installation
 
-The launchers set `PROJECT_DIR="$HOME/linux_ai_agent"`, so place or clone the
-project at that location:
+Clone the repository wherever you prefer, then run the included installer:
 
 ```bash
-git clone https://github.com/Blame11/linux-agent.git "$HOME/linux_ai_agent"
-cd "$HOME/linux_ai_agent"
-
-python3 -m venv venv
-source venv/bin/activate
-python -m pip install groq python-dotenv
+git clone https://github.com/Blame11/linux-agent.git "$HOME/linux-agent"
+cd "$HOME/linux-agent"
+sudo ./install.sh
 ```
 
-Make the `ai` launcher available in the current shell:
-
-```bash
-export PATH="$HOME/linux_ai_agent/bash:$PATH"
-```
-
-To make this available in future Bash sessions, add that `export` line to
-`~/.bashrc`, then open a new shell or source the file.
-
-Initialize task storage before using interactive or troubleshooting mode on a
-fresh installation:
-
-```bash
-python backend/task_state.py
-```
-
-The one-shot CLI initializes the database itself. The explicit initialization
-step is needed because the current interactive path does not initialize the
-SQLite schema.
+The installer creates its environment at `/opt/linux-ai-agent/venv` and
+installs `ai` and `ai-context` under `/usr/local/bin`. It refuses to overwrite
+an existing path unless it is already the matching symlink managed by this
+installer. User configuration and task data remain under
+`~/.linux_ai_agent/`. To update, pull the latest changes and run
+`sudo ./install.sh` again.
 
 ## Environment configuration
 
@@ -214,8 +207,7 @@ provider.
 
 ## Running the agent
 
-With the project installed at `~/linux_ai_agent` and `bash/` on `PATH`, send a
-one-shot request:
+After installation, send a one-shot request:
 
 ```bash
 ai "what is my current kernel version?"
@@ -246,8 +238,8 @@ multi-line terminal output into a prompt, enter `paste`, paste the text, then
 enter `END` on its own line.
 
 Interactive requests are processed as separate tasks; prior requests are not
-currently added to later turns as conversational memory. On a new installation,
-initialize SQLite first as shown above.
+currently added to later turns as conversational memory. SQLite is initialized
+when the CLI starts.
 
 ## Troubleshooting mode
 
@@ -257,11 +249,7 @@ The troubleshooting entry point is:
 ai --troubleshoot
 ```
 
-It opens the interactive prompt. A troubleshooting-specific prompt is defined
-in the source, but the current task loop sends only the first system prompt on
-each request. As a result, this entry point currently does not reliably apply
-the specialized troubleshooting instructions and behaves like normal mode.
-This is a known limitation, not a completed troubleshooting workflow.
+It opens the interactive prompt with troubleshooting-specific instructions.
 
 ## Command approval behavior
 
@@ -343,12 +331,13 @@ The database is stored at:
 ~/.linux_ai_agent/agent.db
 ```
 
-It contains `tasks`, `commands`, and `results` tables. Records include the
-original task, command text, whether it was approved, command status, return
-code when available, result output, and timestamps. Command statuses include
-`RUNNING`, `SUCCESS`, `FAILED`, and `CANCELLED` (older records may also contain
-`TIMEOUT`). Tasks also receive overall statuses such as `RUNNING`, `COMPLETED`,
-`FAILED`, `CANCELLED`, or `MAX_STEPS`.
+It contains `tasks`, `commands`, `results`, and `processes` tables. Records
+include the original task, command text, whether it was approved, command
+status, return code when available, result output, process identifiers, log
+paths, and timestamps. Command statuses include `RUNNING`, `SUCCESS`, `FAILED`,
+`STOPPED`, and `CANCELLED` (older records may also contain `TIMEOUT`). Tasks
+also receive overall statuses such as `RUNNING`, `COMPLETED`, `FAILED`,
+`CANCELLED`, or `MAX_STEPS`.
 
 The current agent supplies at most the latest two command records from the
 active task back to the model. There is no user-facing history browser or
@@ -362,21 +351,24 @@ cross-task memory interface yet.
 - `~/.linux_ai_context.json`: cached static system context.
 - `~/.linux_ai_agent/agent.db`: task, command, and result history.
 
-The executor truncates combined stdout/stderr after 12,000 characters,
-retaining the beginning. Stored result text is further limited to about 4,000
-characters, retaining the beginning and end with a truncation marker. These are
-deterministic character limits, not semantic compression. Token figures printed
-by the client are rough estimates based on four characters per token, not
-provider-reported usage.
+For a command that completes in its five-second startup window, the executor
+returns up to 12,000 characters of combined output. A longer-running command
+continues writing to a private log capped at 1 MiB; excess output is discarded
+after a truncation marker is written. The detached monitor refreshes its
+process state and latest output every second. Logs for long-running commands
+are removed seven days after completion.
+
+Stored result text is further limited to about 4,000 characters, retaining the
+beginning and end with a truncation marker. These are deterministic limits,
+not semantic compression.
 
 ## Development and testing
 
-Backend modules are plain Python files, and the Bash wrappers live in `bash/`.
-There is no tracked requirements file, test configuration, or automated test
-suite yet. A syntax smoke check can be run in the project virtual environment:
+Backend modules are plain Python files and package metadata is in
+`pyproject.toml`. Run the tests with:
 
 ```bash
-python -m compileall backend
+python -m pytest -q
 ```
 
 For manual testing, use a disposable Linux environment, a test GroqCloud key,
@@ -387,12 +379,6 @@ destructive commands.
 
 ## Current limitations
 
-- `ai --troubleshoot` opens an interactive prompt but currently does not pass
-  its specialized prompt into each task request: the task loop builds request
-  messages from only the first system prompt in the conversation.
-- The one-shot CLI initializes SQLite, but interactive and troubleshooting
-  modes do not. On a fresh install, initialize the database with
-  `python backend/task_state.py` before starting those modes.
 - There is no cross-request conversational memory or user-facing task history
   browser, although task history is stored in SQLite and used internally for
   the active task.
@@ -400,18 +386,19 @@ destructive commands.
   task-level exception handler marks the task `FAILED` and propagates the
   exception; interactive mode catches it and prints an error, while the
   one-shot path has no equivalent outer CLI handler.
-- AI output parsing accepts JSON and attempts to extract an embedded JSON
-  object when needed. Comprehensive action-schema validation is not
-  implemented.
+- AI output parsing accepts valid JSON actions and standalone recognized
+  `execute_bash` tool-call blocks. JSON examples embedded in prose are treated
+  as prose; comprehensive action-schema validation is not implemented.
 - Command approval is not an allowlist, sandbox, or complete security model.
 - Context providers cover a limited set of host facts and commonly available
   Linux tools; availability and permissions vary by distribution and WSL
   configuration.
-- Command output is bounded: the executor truncates combined output after
-  12,000 characters, while stored results retain the beginning and end within
-  a 4,000-character limit. Token counts are approximate character-based
-  estimates.
-- No automated test suite or formal packaging/install metadata is included.
+- Command output is bounded: completed command output is limited to 12,000
+  characters, persistent process logs to 1 MiB, and stored result text to
+  about 4,000 characters.
+- The `USER_APPROVAL` command label is not a risk assessment. Every non-empty
+  command still requires explicit user approval, but approval is not a
+  sandbox or guarantee that a command is safe.
 
 ## Roadmap
 

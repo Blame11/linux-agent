@@ -1,10 +1,9 @@
-import sys
-
-from .ai_client import main as ai_main
 from .context import get_static_context
 
 
 def ai():
+    from .ai_client import main as ai_main
+
     ai_main()
 
 

@@ -71,10 +71,14 @@ sudo ./install.sh
 The installer:
 
 1. Checks for Python 3.14+
-2. Checks Python `venv` support
+2. Creates a Python virtual environment and gives a targeted error if venv
+   creation fails
 3. Creates the application environment at `/opt/linux-ai-agent/venv`
-4. Installs the Python package and dependencies
-5. Installs the `ai` and `ai-context` commands
+4. Reinstalls the Python package and dependencies, including when updating an
+   existing install
+5. Refuses to overwrite existing `/usr/local/bin/ai` or `ai-context` paths
+   unless they are already the matching links managed by this installer
+6. Installs the `ai` and `ai-context` commands and verifies `ai-context` runs
 
 The commands are linked at:
 
@@ -98,7 +102,8 @@ Then:
 ai-context
 ```
 
-This displays the Linux system context available to the agent.
+This displays the Linux system context available to the agent. The installer
+also runs this check before reporting success.
 
 ## 5. Run the Agent
 

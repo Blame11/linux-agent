@@ -36,12 +36,12 @@ def test_parses_json_execute_bash_tool_call():
     }
 
 
-def test_parses_embedded_json_command_action():
+def test_embedded_json_command_example_is_not_extracted_from_prose():
     response = 'Proposed command: {"action":"command","command":"pwd"}'
 
     assert parse_ai_response(response) == {
-        "action": "command",
-        "command": "pwd"
+        "action": "answer",
+        "content": response
     }
 
 
@@ -57,6 +57,15 @@ def test_malformed_or_unsupported_tool_calls_are_rejected():
     assert parse_ai_response(
         "<tool_call>function=other_tool>\nwhoami\n</tool_call>"
     ) is None
+
+
+def test_tool_call_embedded_in_prose_is_not_extracted():
+    response = (
+        "Example response: "
+        "<tool_call>function=execute_bash>\nwhoami\n</tool_call>"
+    )
+
+    assert parse_ai_response(response) is None
 
 
 def test_tool_call_command_still_requires_approval(monkeypatch):

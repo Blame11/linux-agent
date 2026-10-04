@@ -119,8 +119,14 @@ cd ~/hello-tushar && python3 -m http.server 8080
 **Important:** Do not blindly approve commands. Review each command before entering `y`.
 
 If the approved server command is still running after five seconds, the agent
-returns control while leaving the server running and reports its PID. Then
-test it with:
+returns control while leaving the server running and reports its PID, process
+group, and private output-log path. Later task steps check whether it is still
+running and include output collected from that log; a background monitor also
+updates its recorded state independently. Each log is capped at 1 MiB and
+kept for up to seven days after a long-running command completes. Short
+commands have their temporary logs removed after output capture. To stop the
+process, ask the agent to terminate the reported process group; review and
+approve the proposed command. Then test the server with:
 
 ```text
 Check whether my web server is running and verify that it serves "Hello Tushar Kand".

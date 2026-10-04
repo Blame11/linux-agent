@@ -3,7 +3,7 @@ import re
 
 
 TOOL_CALL_PATTERN = re.compile(
-    r"<tool_call>\s*(.*?)\s*</tool_call>",
+    r"^\s*<tool_call>\s*(.*?)\s*</tool_call>\s*$",
     re.IGNORECASE | re.DOTALL
 )
 
@@ -121,12 +121,9 @@ def parse_ai_response(response):
     else:
         return _normalize_action(data)
 
-    tool_calls = TOOL_CALL_PATTERN.findall(text)
-    if tool_calls:
-        if len(tool_calls) != 1:
-            return None
-
-        command = _command_from_tool_payload(tool_calls[0])
+    tool_call = TOOL_CALL_PATTERN.fullmatch(text)
+    if tool_call:
+        command = _command_from_tool_payload(tool_call.group(1))
         if command is None:
             return None
         return {
@@ -134,20 +131,7 @@ def parse_ai_response(response):
             "command": command
         }
 
-    decoder = json.JSONDecoder()
-    for index, character in enumerate(text):
-        if character != "{":
-            continue
-        try:
-            data, _ = decoder.raw_decode(text[index:])
-        except json.JSONDecodeError:
-            continue
-
-        action = _normalize_action(data)
-        if action is not None:
-            return action
-
-    if text.startswith(("{", "[")) or text.startswith("```json"):
+    if text.startswith(("{", "[")) or text.startswith("```"):
         return None
 
     if "<tool_call>" in text.lower():

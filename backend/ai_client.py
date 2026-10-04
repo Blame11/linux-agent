@@ -15,8 +15,11 @@ from .task_state import (
     add_command,
     add_result,
     get_task_history,
+    register_process,
+    set_process_monitor,
     initialize_database,
 )
+from .process_monitor import start_process_monitor
 MAX_STEPS = 20
 MAX_TASK_HISTORY = 2
 MAX_RESULT_CHARS = 4000
@@ -218,10 +221,12 @@ def handle_agent_turn(conversation, question):
                 if status == "RUNNING":
                     command_label = "COMMAND STILL RUNNING"
                     result_details = (
-                        "The command did not exit during its startup window "
-                        "and was left running in the background. Do not "
-                        "repeat it; inspect or verify the process using "
-                        "its actual output and PID."
+                        "The command is still active based on a live process "
+                        "group check. Do not repeat it. Its log file contains "
+                        "output captured since launch. To stop the process, "
+                        "propose `kill -- -<process group ID>`; to inspect "
+                        "recent output, propose `tail -n 50 -- <log path>`. "
+                        "Both must go through normal user approval."
                     )
                 else:
                     command_label = "COMMAND EXECUTION RESULT"
@@ -238,6 +243,9 @@ def handle_agent_turn(conversation, question):
                         f"Command:\n{item['command']}\n\n"
                         f"Status: {status}\n\n"
                         f"Return code: {return_code}\n\n"
+                        f"PID: {item['pid']}\n"
+                        f"Process group: {item['process_group_id']}\n"
+                        f"Log file: {item['log_path']}\n\n"
                         f"Actual output:\n{output}"
                     )
                 })
@@ -247,7 +255,7 @@ def handle_agent_turn(conversation, question):
                     "role": "user",
                     "content": (
                         "The command results above are evidence for this task. "
-                        "Do not repeat a successful command unless its result "
+                        "Do not repeat a command already shown unless its result "
                         "is insufficient or the task requires verification. "
                         "Decide whether to return the final answer or request "
                         "one new command."
@@ -428,6 +436,24 @@ def handle_agent_turn(conversation, question):
                 command_id,
                 output
             )
+            if result["status"] == "RUNNING":
+                monitor_log_path = register_process(
+                    command_id,
+                    execution_result
+                )
+                try:
+                    monitor = start_process_monitor(
+                        command_id,
+                        monitor_log_path
+                    )
+                except OSError as error:
+                    print(
+                        "\nCould not start the background process monitor. "
+                        "Process status will refresh the next time task "
+                        f"history is read: {error}\n"
+                    )
+                else:
+                    set_process_monitor(command_id, monitor.pid)
 
         update_task_status(
             task_id,
