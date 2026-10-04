@@ -385,5 +385,5 @@ planned. Prompt Guard and command allowlists are skipped for now.
 
 ## License
 
-The project includes the Mozilla Public License, Version 2.0. See
-[LICENSE](./LICENSE) and [LICENSE.txt](./LICENSE.txt).
+Copyright (c) 2026 Tushar Kand. The project is licensed under the Mozilla
+Public License, Version 2.0; see [LICENSE](./LICENSE).
