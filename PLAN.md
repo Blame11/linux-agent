@@ -60,6 +60,92 @@ The SQLite schema is initialized when the CLI starts, and `--troubleshoot`
 passes its troubleshooting prompt to interactive tasks. Continue expanding
 automated coverage as reliability work proceeds.
 
+## TESTING GUIDE
+
+### Set up a development environment
+
+The project requires Python 3.14 or newer. The runtime dependencies are
+declared in `pyproject.toml`; `pytest` is used by the tests but is not currently
+declared as a project dependency. From the repository root:
+
+```bash
+python3.14 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e .
+python -m pip install pytest
+```
+
+Run the tests from the repository root using the same Python environment:
+
+```bash
+python -m pytest -q
+```
+
+The automated tests use local code and subprocesses; they do not require a
+Groq API key or call the Groq service. Executor tests start local child
+processes and bind an HTTP test server to loopback, then check and stop the
+processes. Run them in a normal Linux development environment with Python and
+`/bin/bash` available.
+
+### Existing test coverage
+
+| Test file | What it checks |
+| --- | --- |
+| `tests/test_action.py` | Parses JSON command actions, recognized standalone `execute_bash` formats, and plain-text answers; rejects malformed or unsupported tool calls and command examples embedded in prose; verifies a recovered command still requires approval and is not executed when approval is declined. |
+| `tests/test_executor.py` | Returns promptly for a persistent HTTP server; captures output and exit codes for completed commands; refreshes final output/status for a long finite command; records stopped process groups; enforces the 1 MiB process-log cap and truncation marker; removes completed logs after the retention period. |
+| `tests/test_cli.py` | Confirms `ai-context` can run without Groq credentials configured. |
+
+### Run focused tests
+
+Run one test module when changing a specific area:
+
+```bash
+python -m pytest -q tests/test_action.py
+python -m pytest -q tests/test_executor.py
+python -m pytest -q tests/test_cli.py
+```
+
+Select tests by keyword with `-k`, or run one exact test by its node ID:
+
+```bash
+python -m pytest -q tests/test_executor.py -k persistent_http_server
+python -m pytest -q tests/test_action.py::test_tool_call_command_still_requires_approval
+```
+
+Use `-v` to display each test name, and `-x` to stop after the first failure:
+
+```bash
+python -m pytest -v
+python -m pytest -q -x
+```
+
+Pytest exits with status zero when all selected tests pass and a nonzero status
+when a test fails or collection cannot complete. Investigate the failure
+output before treating a partial or interrupted run as a pass. After changing
+command execution, parsing, persistence, or approval behavior, run the
+relevant focused module and then the full suite.
+
+### Test coverage to add
+
+As reliability work continues, add regression cases for:
+
+- Provider configuration, missing credentials, provider/network errors, and
+  consistent one-shot versus interactive error reporting. Use mocked provider
+  responses so automated tests remain offline.
+- Invalid action schemas and additional supported provider response formats;
+  prove no malformed response can execute a command or bypass approval.
+- Command launch failures, interruption, unusual exit statuses, output
+  truncation boundaries, and concurrent process monitoring.
+- Process-monitor startup failure or unexpected exit, stale database state,
+  process-status refresh, and cleanup behavior at retention boundaries.
+- Task-state transitions for success, failure, cancellation, and the step cap.
+- Context selection and host-command failures without requiring a particular
+  Linux distribution or systemd installation.
+- Future model-provider configuration, including optional API keys and
+  unreachable local endpoints, while preserving the GroqCloud path and
+  requiring explicit approval for every proposed command.
+
 ## PHASE 3 — SECURITY
 
 **Status: SKIPPED FOR NOW**
