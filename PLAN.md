@@ -15,8 +15,8 @@ loop:
 - Bash interface:
   - `ai "question"` sends a one-shot request.
   - `ai` opens an interactive prompt.
-  - `ai --troubleshoot` opens an interactive entry point; its special prompt is
-    not currently preserved by the task loop (see Phase 2/current limitations).
+  - `ai --troubleshoot` opens an interactive prompt with troubleshooting
+    instructions.
 - GroqCloud integration through the Groq Python client, with model and API
   credential loaded from `GROQ_MODEL` and `GROQ_API_KEY`.
 - Linux context with cached static facts and dynamic providers for location,
@@ -54,12 +54,11 @@ claim the concerns are fully solved.
 | Execution-state tracking | Tasks and commands persist statuses, approval, return codes, and output; active commands use `RUNNING`. | Define and validate state transitions; address unset return codes for active and cancelled commands consistently. |
 | Malformed AI response handling | The client normalizes valid JSON actions, plain-text answers, and standalone explicit `execute_bash` tool-call markup; malformed structured responses fail without executing. JSON embedded in prose is not interpreted as an action. Recovered commands still pass through user approval. | Expand provider-format coverage and keep parser behavior consistent across all AI response paths. |
 | Robust command execution | Commands run with Bash syntax, captured output, and generic exception handling. | Test launch failures, large output, and terminal interruption; ensure recorded evidence always matches what was executed. |
-| Prompt/token optimization | Prompts are separated into common/normal/troubleshooting forms; character-based token estimates are printed. | Preserve the selected mode prompt, reduce duplicated context/history construction, and measure prompt size without presenting estimates as exact token usage. |
+| Prompt/token optimization | Prompts are separated into common/normal/troubleshooting forms; prompt and token-estimate debug messages are not printed to the terminal. | Reduce duplicated context/history construction and evaluate prompt size without presenting estimates as exact token usage. |
 
-Immediate consistency fixes should include initializing the SQLite schema for
-interactive/troubleshooting mode and ensuring `--troubleshoot` actually passes
-the troubleshooting prompt to each task. Focused executor tests now exist;
-expand automated coverage as reliability work continues.
+The SQLite schema is initialized when the CLI starts, and `--troubleshoot`
+passes its troubleshooting prompt to interactive tasks. Continue expanding
+automated coverage as reliability work proceeds.
 
 ## PHASE 3 — SECURITY
 
@@ -154,3 +153,28 @@ These are target workflows, not implemented claims. They should use the same
 evidence-first approval loop, keep Linux command output as the source of truth,
 and avoid assuming either that a command succeeded or that a proposed fix
 resolved the problem. Keep the architecture simple and modular.
+
+## PHASE 7 — MODEL PROVIDERS
+
+**Status: PLANNED**
+
+The current implementation uses GroqCloud. Provider configuration and local
+model-server support are not implemented.
+
+Potential work:
+
+- Make the provider, API base URL, and model configurable without changing the
+  request/response handling contract used by the agent.
+- Support OpenAI-compatible local servers, such as Ollama, LM Studio, or
+  vLLM, where their API compatibility permits.
+- Make API-key authentication optional for endpoints that do not require it;
+  keep credentials out of source control and user-visible logs.
+- Report connection, authentication, and model errors clearly, including
+  unreachable local endpoints.
+- Test provider-specific request/response behavior and configuration while
+  preserving the current GroqCloud path.
+
+Provider selection must not bypass the existing approval step: every
+non-empty proposed command must still be shown to the user and explicitly
+approved before local Bash execution. These are planning goals, not supported
+configuration or behavior today.
